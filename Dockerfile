@@ -1,29 +1,40 @@
-FROM golang:1.14-alpine as builder
+FROM golang:1.22.1 as builder
 # MAINTAINER hanchuanchuan <chuanchuanhan@gmail.com>
 
 ENV TZ=Asia/Shanghai
 ENV LANG="en_US.UTF-8"
 
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y \
     ca-certificates wget \
     make \
     git \
     gcc \
-    musl-dev
+    libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN wget -q -O /usr/local/bin/dumb-init https://github.com/Yelp/dumb-init/releases/download/v1.2.2/dumb-init_1.2.2_amd64 \
-&& wget -q -O /etc/apk/keys/sgerrand.rsa.pub https://alpine-pkgs.sgerrand.com/sgerrand.rsa.pub \
-&& wget -q -O /glibc.apk https://github.com/sgerrand/alpine-pkg-glibc/releases/download/2.28-r0/glibc-2.28-r0.apk \
- && chmod +x /usr/local/bin/dumb-init
+&& chmod +x /usr/local/bin/dumb-init
 
-COPY bin/goInception /goInception
-# COPY bin/percona-toolkit.tar.gz /tmp/percona-toolkit.tar.gz
-COPY bin/pt-online-schema-change /tmp/pt-online-schema-change
-COPY bin/gh-ost /tmp/gh-ost
+RUN mkdir -p /etc/apk/keys \
+&& wget -q -O /etc/apk/keys/sgerrand.rsa.pub https://alpine-pkgs.sgerrand.com/sgerrand.rsa.pub \
+&& wget -q -O /glibc.apk https://github.com/sgerrand/alpine-pkg-glibc/releases/download/2.28-r0/glibc-2.28-r0.apk
+
+RUN wget -q -O /tmp/pt-online-schema-change https://www.percona.com/get/pt-online-schema-change \
+&& chmod +x /tmp/pt-online-schema-change
+
+RUN wget -q -O /tmp/gh-ost.tar.gz https://github.com/github/gh-ost/releases/download/v1.1.0/gh-ost-binary-linux-20200828140552.tar.gz \
+&& tar -zxvf /tmp/gh-ost.tar.gz -C /tmp/ \
+&& rm /tmp/gh-ost.tar.gz
+
+WORKDIR /go/src/github.com/hanchuanchuan/goInception
+COPY . .
+RUN go mod download
+RUN CGO_ENABLED=0 go build -o /goInception tidb-server/main.go
+
 COPY config/config.toml.default /etc/config.toml
 
 # Executable image
-FROM alpine
+FROM alpine:3.18
 
 COPY --from=builder /glibc.apk /glibc.apk
 COPY --from=builder /etc/apk/keys/sgerrand.rsa.pub /etc/apk/keys/sgerrand.rsa.pub
@@ -34,6 +45,7 @@ COPY --from=builder /usr/local/bin/dumb-init /usr/local/bin/dumb-init
 # COPY --from=builder /tmp/percona-toolkit.tar.gz /tmp/percona-toolkit.tar.gz
 COPY --from=builder /tmp/pt-online-schema-change /usr/local/bin/pt-online-schema-change
 COPY --from=builder /tmp/gh-ost /usr/local/bin/gh-ost
+RUN chmod +x /usr/local/bin/pt-online-schema-change /usr/local/bin/gh-ost
 
 WORKDIR /
 
@@ -61,8 +73,6 @@ ENV TZ=Asia/Shanghai
 RUN set -x \
   && apk add --no-cache --force-overwrite perl perl-dbi perl-dbd-mysql perl-io-socket-ssl perl-term-readkey tzdata /glibc.apk \
   && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
-  && chmod +x /usr/local/bin/pt-online-schema-change \
-  && chmod +x /usr/local/bin/gh-ost \
   && apk fix --force-overwrite alpine-baselayout-data
 
 ENTRYPOINT ["/usr/local/bin/dumb-init", "/goInception","--config=/etc/config.toml"]
